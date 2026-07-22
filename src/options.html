@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Timezone Companion — Options</title>
+  <link rel="stylesheet" href="options.css" />
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <h1>Timezone Companion</h1>
+      <p class="sub">Show your chosen time zone next to any time on a web page —
+        but only when that zone isn't already displayed.</p>
+    </header>
+
+    <section class="card">
+      <label class="row switch">
+        <span>
+          <strong>Enabled</strong>
+          <small>Turn all annotations on or off.</small>
+        </span>
+        <input type="checkbox" id="enabled" />
+      </label>
+    </section>
+
+    <section class="card">
+      <label class="row" for="targetTimeZone">
+        <span>
+          <strong>Your time zone</strong>
+          <small>Times will be shown in this zone.</small>
+        </span>
+        <select id="targetTimeZone"></select>
+      </label>
+
+      <hr />
+
+      <label class="row switch" for="convertUntagged">
+        <span>
+          <strong>Convert times without a zone label</strong>
+          <small>Times like “3:00 PM” carry no zone. Assume they are in the
+            source below.</small>
+        </span>
+        <input type="checkbox" id="convertUntagged" />
+      </label>
+
+      <label class="row" for="untaggedSource">
+        <span>
+          <strong>Assume unlabelled times are in</strong>
+          <small>Used only for times without a zone label.</small>
+        </span>
+        <select id="untaggedSource"></select>
+      </label>
+    </section>
+
+    <section class="card">
+      <label class="row" for="hourFormat">
+        <span><strong>Hour format</strong>
+          <small>How the added time is written.</small></span>
+        <select id="hourFormat">
+          <option value="auto">Match the original</option>
+          <option value="12">12-hour (3:00 PM)</option>
+          <option value="24">24-hour (15:00)</option>
+        </select>
+      </label>
+
+      <label class="row switch" for="showZoneName">
+        <span><strong>Show zone name</strong>
+          <small>Include the short name, e.g. “PST”.</small></span>
+        <input type="checkbox" id="showZoneName" />
+      </label>
+
+      <label class="row" for="wrap">
+        <span><strong>Wrap style</strong>
+          <small>How the added time is separated.</small></span>
+        <select id="wrap">
+          <option value="paren">(parentheses)</option>
+          <option value="bracket">[brackets]</option>
+          <option value="space">plain space</option>
+        </select>
+      </label>
+
+      <label class="row" for="style">
+        <span><strong>Appearance</strong>
+          <small>Blend in, or dim slightly so it's easy to spot.</small></span>
+        <select id="style">
+          <option value="muted">Slightly dimmed</option>
+          <option value="plain">Identical to page text</option>
+        </select>
+      </label>
+    </section>
+
+    <section class="card preview">
+      <h2>Preview</h2>
+      <div id="preview" class="preview-body"></div>
+    </section>
+
+    <p id="status" class="status" role="status" aria-live="polite"></p>
+  </main>
+
+  <script src="tz-data.js"></script>
+  <script src="tz-core.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>
