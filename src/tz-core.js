@@ -8,6 +8,7 @@
   "use strict";
 
   var ABBREV = root.TZData.ABBREV;
+  var ABBREV_ZONE = root.TZData.ABBREV_ZONE;
 
   /*
    * One master regex. It matches an hour, an optional ":minutes", an optional
@@ -83,6 +84,36 @@
     return "";
   }
 
+  function normalizeZoneName(name) {
+    return String(name || "").replace(/\s+/g, "").toUpperCase();
+  }
+
+  var HALF_YEAR_MS = 182 * 24 * 60 * 60000;
+
+  /*
+   * Every label the target zone answers to: its standard name, its daylight
+   * name, and the generic form beside them ("PT" for PST/PDT). Sampling half a
+   * year either side of the instant picks up both seasons.
+   *
+   * This is what decides whether a label names *the reader's own zone*, which
+   * is a different question from whether the offsets happen to coincide. A
+   * Pacific reader gains nothing from "3:00 PM PST (4:00 PM PDT)" — the page
+   * means local time and the annotation just shifts it an hour.
+   */
+  function zoneAliases(zone, instant) {
+    var out = {};
+    var samples = [instant - HALF_YEAR_MS, instant, instant + HALF_YEAR_MS];
+    for (var i = 0; i < samples.length; i++) {
+      var name = normalizeZoneName(shortZoneName(samples[i], zone));
+      if (!name) continue;
+      out[name] = true;
+      // PST/PDT -> PT, EST/EDT -> ET, AKST/AKDT -> AKT, AEST/AEDT -> AET.
+      var generic = /^([A-Z]{1,3})[SD]T$/.exec(name);
+      if (generic) out[generic[1] + "T"] = true;
+    }
+    return out;
+  }
+
   /*
    * Inspect a single regex match and decide whether it is a real, convertible
    * time. Returns a descriptor or null.
@@ -116,14 +147,23 @@
 
     // Work out the displayed source zone, if any.
     var srcOffset = null;      // fixed offset in minutes, when known from text
+    var srcZone = null;        // IANA zone, when the label is a generic one
+    var srcAbbrev = null;      // the regional abbreviation, uppercased
     var displayedName = null;  // the zone token as written on the page
     if (utcTok) {
       displayedName = (match[0].match(/\b(?:UTC|GMT|Z)\b\s*[+-]?\d*(?::?\d{2})?/i) || [utcTok])[0].trim();
       srcOffset = parseSignedOffset(utcOff);
     } else if (abbrevTok) {
       var key = abbrevTok.toUpperCase();
-      if (Object.prototype.hasOwnProperty.call(ABBREV, key)) {
+      if (Object.prototype.hasOwnProperty.call(ABBREV_ZONE, key)) {
+        // A generic label: accurate as written, so let the zone's own DST
+        // rules pick the offset rather than assuming standard time.
+        srcZone = ABBREV_ZONE[key];
+        srcAbbrev = key;
+        displayedName = abbrevTok;
+      } else if (Object.prototype.hasOwnProperty.call(ABBREV, key)) {
         srcOffset = ABBREV[key];
+        srcAbbrev = key;
         displayedName = abbrevTok;
       } else {
         // Trailing letters weren't a zone; treat the time as untagged and
@@ -139,7 +179,9 @@
       hour: hour,
       minute: minute,
       origHour12: origHour12,
-      srcOffset: srcOffset,      // null => untagged
+      srcOffset: srcOffset,      // null => not a fixed-offset label
+      srcZone: srcZone,          // set for a generic label ("PT")
+      srcAbbrev: srcAbbrev,      // set for any regional label, not UTC/GMT/Z
       displayedName: displayedName
     };
   }
@@ -166,24 +208,44 @@
     if (desc.srcOffset !== null) {
       srcOffset = desc.srcOffset;
       instant = Date.UTC(y, mo, d, desc.hour, desc.minute) - srcOffset * 60000;
+    } else if (desc.srcZone) {
+      // A generic label ("PT") — taken as accurate, so its offset comes from
+      // the zone's rules on the day, not from an assumed standard time. This is
+      // a labelled time, so `convertUntagged` doesn't gate it.
+      instant = wallToInstantIana(y, mo, d, desc.hour, desc.minute, desc.srcZone);
+      srcOffset = ianaOffsetMinutes(desc.srcZone, new Date(instant));
     } else {
       if (!settings.convertUntagged) return null;
-      var srcZone = settings.untaggedSource === "local"
+      var untagged = settings.untaggedSource === "local"
         ? Intl.DateTimeFormat().resolvedOptions().timeZone
         : settings.untaggedSource;
-      instant = wallToInstantIana(y, mo, d, desc.hour, desc.minute, srcZone);
-      srcOffset = ianaOffsetMinutes(srcZone, new Date(instant));
+      instant = wallToInstantIana(y, mo, d, desc.hour, desc.minute, untagged);
+      srcOffset = ianaOffsetMinutes(untagged, new Date(instant));
     }
 
     var targetOffset = ianaOffsetMinutes(target, new Date(instant));
     // Same wall-clock time in both zones -> nothing to add.
     if (targetOffset === srcOffset) return null;
 
+    /*
+     * The label already names the reader's own zone -> nothing to add, even
+     * though the offsets differ. "3:00 PM PST" read in Pacific means local
+     * time; annotating it "(4:00 PM PDT)" shifts a local time by an hour and
+     * reads as a second, contradictory time. Any of the zone's own labels
+     * count — standard, daylight, or generic.
+     *
+     * Scoped to regional abbreviations. UTC/GMT/Z are absolute references
+     * rather than a name for somewhere, so "14:00 GMT" still earns its
+     * "(15:00 BST)" for a London reader; offset equality alone decides those.
+     */
+    if (desc.srcAbbrev && zoneAliases(target, instant)[desc.srcAbbrev]) {
+      return null;
+    }
+
     var targetShort = shortZoneName(instant, target);
     // The target zone is already shown right here -> nothing to add.
     if (desc.displayedName &&
-        desc.displayedName.replace(/\s+/g, "").toUpperCase() ===
-          targetShort.replace(/\s+/g, "").toUpperCase()) {
+        normalizeZoneName(desc.displayedName) === normalizeZoneName(targetShort)) {
       return null;
     }
 

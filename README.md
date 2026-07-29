@@ -17,11 +17,16 @@ removable annotation.
 - Works out the source zone:
   - **Labelled times** (e.g. `EST`, `PST`, `UTC`, `GMT+2`) are read at the
     offset that label denotes.
+  - **Generic labels** (`PT`, `ET`, `CT`, `MT`) name a region without saying
+    standard or daylight, so they're taken as accurate and read at whatever that
+    zone's offset actually is on the day — `3:00 PM PT` in July is PDT, not PST.
   - **Unlabelled times** are assumed to be in a source zone you choose
     (your browser's local zone by default). This can be turned off.
 - Converts to your chosen target zone and inserts it beside the original.
 - Skips the annotation when there's nothing to add — the two zones share the
-  same offset, or the target zone is already displayed on that time.
+  same offset, or the label already names **your** zone. A Pacific reader gets
+  nothing from `3:00 PM PST`, `3:00 PM PDT`, or `3:00 PM PT`: the page means
+  local time, so annotating it would just restate it, shifted.
 - Reads a time even when the page has split it across inline elements — sites
   built on Statuspage write `Jul <var>29</var>, <var>2026</var> -
   <var>20:33</var> UTC`, putting the digits and their `UTC` label in separate
@@ -77,6 +82,12 @@ Run `node tools/test-core.js` to sanity-check the conversion logic and
 - Zone abbreviations are inherently ambiguous (e.g. `CST`, `IST`). The table in
   `src/tz-data.js` uses the most common meaning; explicit `GMT±hh` forms are
   always unambiguous.
+- `UTC` and `GMT` are treated as absolute references rather than as a name for
+  anywhere, so a London reader still gets `14:00 GMT (15:00 BST)` in summer —
+  only regional labels are suppressed for naming your own zone.
+- A generic label is resolved against **today's** date, since the extension
+  reads times but not dates. An archived January page saying `3:00 PM PT` read
+  in July resolves as PDT.
 - Bare times without minutes or an am/pm marker (e.g. a lone `5`) are ignored to
   avoid false positives on prices, scores, and version numbers.
 - Times are anchored to "today" in the target zone for daylight-saving lookups.

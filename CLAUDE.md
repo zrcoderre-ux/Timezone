@@ -23,18 +23,20 @@ node tools/test-core.js      # time parsing, offset math, formatting
 node tools/test-content.js   # DOM scanning, on a small hand-rolled DOM shim
 ```
 
-`test-content.js` exits non-zero on failure. `test-core.js` prints its
-conversions for eyeballing, so compare its output against the previous run
-rather than trusting the exit code alone.
+Both exit non-zero on failure. `test-core.js` also *prints* a block of
+conversions above its asserted section — those are eyeball-only, so compare them
+against the previous run rather than trusting the exit code alone.
 
 # Architecture overview
 
 A Chrome MV3 extension that annotates times on a page with the reader's own
 zone. Four scripts, loaded as plain globals (no modules):
 
-- `src/tz-data.js` — `TZData`: defaults, and the zone-abbreviation → fixed
-  offset table. An abbreviation already encodes standard-vs-daylight (`EST` vs
-  `EDT`), so a labelled time needs no DST guessing.
+- `src/tz-data.js` — `TZData`: defaults, and two abbreviation tables. `ABBREV`
+  maps a **specific** abbreviation to a fixed offset: `EST` vs `EDT` already
+  encodes standard-vs-daylight, so it needs no DST guessing. `ABBREV_ZONE` maps a
+  **generic** one (`PT`, `ET`, `CT`, `MT`) to an IANA zone instead — see the zone
+  label rules below.
 - `src/tz-core.js` — `TZCore`: one master regex, offset math, formatting. No DOM
   access, so it can be reasoned about and tested in isolation. `scanText`
   returns `{ start, end, annotation }` for a string.
@@ -81,10 +83,45 @@ tests already cover:
 - **Runs are all snapshotted before any mutation.** Splitting a node mid-walk
   would disturb a walk still in progress.
 
+## Zone label rules (standing instructions from the repo owner)
+
+**A generic label is accurate — trust it.** `PT`/`ET`/`CT`/`MT` name a region
+without saying standard or daylight, so resolve them through their IANA zone
+(`ABBREV_ZONE`) and let that zone's own rules pick the offset on the day. Reading
+`PT` as a fixed `PST` put every summer conversion an hour out. Do NOT move these
+back into `ABBREV`, and note that a generic label is a *labelled* time, so
+`convertUntagged` must not gate it.
+
+**A label naming the reader's own zone needs no annotation at all** — in any of
+its forms, and regardless of whether the offsets match. A Pacific reader gains
+nothing from `3:00 PM PST (4:00 PM PDT)`: the page means local time, and the
+annotation restates it an hour off, reading as a second contradictory time.
+`zoneAliases` decides this by asking what labels the target zone answers to
+across the year — standard, daylight, and the generic form derived from them —
+rather than by comparing offsets. Sampling half a year either side is what picks
+up the season the reader isn't currently in.
+
+The carve-out: this applies to **regional** abbreviations only (`desc.srcAbbrev`,
+set only in the abbreviation branch). `UTC`/`GMT`/`Z` are absolute references
+rather than a name for somewhere, so `14:00 GMT` still earns its `(15:00 BST)`
+for a London reader and offset equality alone decides those. Don't collapse the
+two paths.
+
+`AT` must never be added as a recognised label: the matcher case-folds, so
+"meeting 3:00 at the office" would read "at" as a zone. `AKT`, `HT`, and `AET`
+are safe by that test but simply aren't recognised yet.
+
+Both rules are asserted in `tools/test-core.js` (the `--- zone labels ---`
+section), across summer and winter. That section exits non-zero; the printed
+cases above it are still eyeball-only.
+
 ## Notes
 
 - Zone abbreviations are inherently ambiguous (`CST`, `IST`); the table picks
   the most common meaning. Explicit `GMT±hh` is always unambiguous.
+- Times are resolved against **today's** date — the extension reads times but
+  not dates, so an archived January page saying `3:00 PM PT` resolves as PDT
+  when read in July.
 - The annotation opens with a **non-breaking space** (` `) so the added
   time can never wrap away from the original. Test expectations must use it.
 - Bare times with neither minutes nor an am/pm marker (a lone `5`) are ignored
