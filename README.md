@@ -22,6 +22,10 @@ removable annotation.
 - Converts to your chosen target zone and inserts it beside the original.
 - Skips the annotation when there's nothing to add — the two zones share the
   same offset, or the target zone is already displayed on that time.
+- Reads a time even when the page has split it across inline elements — sites
+  built on Statuspage write `Jul <var>29</var>, <var>2026</var> -
+  <var>20:33</var> UTC`, putting the digits and their `UTC` label in separate
+  text nodes.
 - Handles dynamically-loaded content via a `MutationObserver`, and re-renders
   instantly when you change settings.
 
@@ -61,9 +65,11 @@ src/background.js     Service worker (seeds default settings)
 icons/                Generated PNG icons
 tools/gen-icons.js    Regenerates the icons (no dependencies)
 tools/test-core.js    Ad-hoc checks for the conversion core
+tools/test-content.js Checks for the DOM scanning, on a small DOM shim
 ```
 
-Run `node tools/test-core.js` to sanity-check the conversion logic, or
+Run `node tools/test-core.js` to sanity-check the conversion logic and
+`node tools/test-content.js` to check the DOM scanning, or
 `node tools/gen-icons.js` to regenerate the icons.
 
 ## Notes & limitations
@@ -74,3 +80,6 @@ Run `node tools/test-core.js` to sanity-check the conversion logic, or
 - Bare times without minutes or an am/pm marker (e.g. a lone `5`) are ignored to
   avoid false positives on prices, scores, and version numbers.
 - Times are anchored to "today" in the target zone for daylight-saving lookups.
+- A time is read across inline elements but never across a block boundary or a
+  `<br>`, so a zone label that starts the *next* paragraph is not mistaken for
+  the label of the time ending this one.
