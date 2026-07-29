@@ -42,10 +42,10 @@
   var ABBREV = {
     UTC: 0, GMT: 0, Z: 0, ZULU: 0, WET: 0, UT: 0,
     // North America
-    EST: -300, EDT: -240, ET: -300,
-    CST: -360, CDT: -300, CT: -360,
-    MST: -420, MDT: -360, MT: -420,
-    PST: -480, PDT: -420, PT: -480,
+    EST: -300, EDT: -240,
+    CST: -360, CDT: -300,
+    MST: -420, MDT: -360,
+    PST: -480, PDT: -420,
     AKST: -540, AKDT: -480,
     HST: -600, HAST: -600, HADT: -540,
     AST: -240, ADT: -180, NST: -210, NDT: -150,
@@ -62,6 +62,28 @@
     // Oceania
     AWST: 480, ACST: 570, ACDT: 630,
     AEST: 600, AEDT: 660, NZST: 720, NZDT: 780
+  };
+
+  /*
+   * Generic regional abbreviations, mapped to an IANA zone rather than a fixed
+   * offset. Unlike PST/PDT these carry no standard-vs-daylight marker, so "PT"
+   * means whatever Pacific time actually is on the day in question — treat the
+   * label as accurate and let the zone's own rules decide the offset. Reading
+   * "PT" as PST put every summer conversion an hour out.
+   *
+   * "MT" resolves through Denver, not Phoenix: Arizona keeps standard time all
+   * year, but Denver is what "Mountain Time" ordinarily means, in keeping with
+   * the most-common-meaning rule above.
+   *
+   * Only forms already recognised are listed. Notably absent is "AT": upper-
+   * cased it collides with the English word, and the matcher case-folds, so
+   * "meeting 3:00 at the office" would read "at" as a zone.
+   */
+  var ABBREV_ZONE = {
+    ET: "America/New_York",
+    CT: "America/Chicago",
+    MT: "America/Denver",
+    PT: "America/Los_Angeles"
   };
 
   // A curated fallback list of IANA zones, used only when the runtime does
@@ -83,6 +105,7 @@
   root.TZData = {
     DEFAULTS: DEFAULTS,
     ABBREV: ABBREV,
+    ABBREV_ZONE: ABBREV_ZONE,
     COMMON_ZONES: COMMON_ZONES,
     // Merge stored values over defaults, ignoring unknown keys.
     withDefaults: function (stored) {
