@@ -279,6 +279,27 @@ check("nothing added when the target zone is already shown",
   el("div", el("span", "20:33"), " PDT"),
   "20:33 PDT");
 
+/*
+ * Opening hours in an email: the label closes the range, and the client has
+ * the two ends in separate inline elements. The run joins them, and the range
+ * pass in tz-core then hands "7 AM" the CST label it is written under.
+ */
+check("email opening hours, range split across inline elements",
+  el("div",
+    "We are open Monday-Friday ", el("b", "7 AM"), " to ", el("b", "9 PM CST"),
+    ", and ", el("b", "8 am"), " to ", el("b", "4:30 pm CST"), " at weekends."),
+  "We are open Monday-Friday 7 AM" + an("06:00 PDT") +
+  " to 9 PM CST" + an("20:00 PDT") +
+  ", and 8 am" + an("07:00 PDT") +
+  " to 4:30 pm CST" + an("15:30 PDT") + " at weekends.",
+  { passes: 3 });
+
+// A block boundary ends the run, so there is no range to share a label across:
+// "9 AM" stays untagged rather than borrowing CST from the next paragraph.
+check("a range does not reach across a block boundary",
+  el("div", el("p", "meeting 9 AM"), el("p", "5 PM CST is the window")),
+  "meeting 9 AM" + an("02:00 PDT") + "5 PM CST" + an("16:00 PDT") + " is the window");
+
 // buildRuns should keep inline text together and split at blocks.
 (function () {
   var tree = el("div", el("p", "a ", el("var", "1"), "b"), el("p", "c"));

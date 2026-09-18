@@ -83,6 +83,55 @@ tests already cover:
 - **Runs are all snapshotted before any mutation.** Splitting a node mid-walk
   would disturb a walk still in progress.
 
+## A range shares its qualifiers
+
+The second bug this cost us, reported against an email: "We are open
+Monday-Friday 7 AM to 9 PM CST". The regex only ever sees a zone label attached
+to the time it follows, so `7 AM` was read as an *untagged* time — the
+Statuspage failure in another costume. For a reader in Central time that yields
+nothing on the opening end and an annotation on the closing one; for anyone else
+it yields a confidently wrong conversion of a Central time.
+
+`shareRangeQualifiers` therefore lets two times joined by **nothing but a range
+connector** (`RANGE_GAP_RE`: a dash, `to`, `until`, `and`, …) lend each other
+what they lack:
+
+- **backwards, the am/pm marker and the zone label** — this is how an English
+  range is written, labelled once at the end (`7 to 9 PM CST`);
+- **forwards, the zone label only** (`from 9 AM CST to 5 PM`). A marker is never
+  carried forwards: `9 AM to 5` is not how a range is written, and guessing
+  would invent the half of the day it names.
+
+Rules that keep this from inventing times:
+
+- **Extra words mean two times, not one range.** "we open at 8 am and close at
+  5 pm CST" must leave `8 am` untagged; only a bare connector counts.
+- **An inherited marker can put the opening end in the other half of the day.**
+  It carries straight over while the range still runs forwards (`7:00 to 9:00
+  PM` opens at 7 PM), and flips when it would not (`11:00 to 1:00 PM` opens at
+  11 AM). Compare the two ends as hours *of the day*, so `12:30 to 2:00 PM` does
+  not flip.
+- **A marker is the only thing that revives a bare end.** `7` alone stays a
+  price or a score; `7 to 9 PM` is a time. A bare end lends nothing either, so
+  `9 to 5 CST` still annotates neither end.
+- **The label is inherited, not the offset**, so a label naming the reader's own
+  zone suppresses *both* ends (`7 to 9 PM PT` for a Pacific reader) — the zone
+  rules below apply to an inherited label exactly as to a written one.
+- **`scanText` collects every candidate before annotating any.** Whether one end
+  is a time at all, and which time, depends on the end that follows it.
+- **A block boundary still ends the run**, so a range can never form across one.
+
+The hyphen in the leading lookbehind is now rejected only when it *follows a
+digit* (`2026-12-30`), because the closing end of `9AM-5PM CST` has to match to
+inherit anything. A signed `UTC`/`GMT` offset is guarded separately, or the
+`08:00` in `GMT-08:00` would read as a second time. `1-5 PM` stays rejected:
+digit-hyphen-digit is a date or a score more often than a range.
+
+Both rules are asserted in `tools/test-core.js` (the `--- ranges ---` section,
+which re-asserts the numeric shapes the old hyphen rule rejected wholesale) and
+in `tools/test-content.js` (the email case, where the two ends sit in separate
+inline elements).
+
 ## Zone label rules (standing instructions from the repo owner)
 
 **A generic label is accurate — trust it.** `PT`/`ET`/`CT`/`MT` name a region

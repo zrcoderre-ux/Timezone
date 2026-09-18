@@ -103,5 +103,111 @@ expectations.forEach(function (e) {
   }
 });
 
-console.log(failures ? "\n" + failures + " failure(s)" : "\nall zone-label checks passed");
+/*
+ * Asserted checks for the range rules. The reported case was an email's
+ * opening hours: "We are open Monday-Friday 7 AM to 9 PM CST". The label
+ * closes the range, so "7 AM" was read as an untagged time — nothing at all
+ * for a reader in the target zone, and a wrong conversion of a Central time
+ * for everyone else.
+ *
+ * `untaggedSource` is pinned to UTC here so the cases that deliberately leave
+ * a time untagged don't depend on the machine's own zone.
+ */
+console.log("\n--- ranges ---");
+
+function annotateAt(text, settings, instant) {
+  var res = self.TZCore.scanText(text, settings, instant);
+  var out = "", cursor = 0;
+  res.forEach(function (r) {
+    out += text.slice(cursor, r.end) + "«" + r.annotation.trim() + "»";
+    cursor = r.end;
+  });
+  return out + text.slice(cursor);
+}
+
+// [text, reader zone, instant, expected annotated text]
+var rangeCases = [
+  // The report itself, in both seasons. 7 AM CST is 13:00 UTC either way; the
+  // reader's own zone is what moves.
+  ["We are open Monday-Friday 7 AM to 9 PM CST, Saturday and Sunday 8 am to 4:30 pm CST.",
+   "America/Los_Angeles", SUMMER,
+   "We are open Monday-Friday 7 AM«(6:00 AM PDT)» to 9 PM CST«(8:00 PM PDT)», " +
+   "Saturday and Sunday 8 am«(7:00 AM PDT)» to 4:30 pm CST«(3:30 PM PDT)»."],
+  ["We are open Monday-Friday 7 AM to 9 PM CST.", "America/Los_Angeles", WINTER,
+   "We are open Monday-Friday 7 AM«(5:00 AM PST)» to 9 PM CST«(7:00 PM PST)»."],
+
+  // The other connectors, including the closed-up form business hours are
+  // usually written in.
+  ["Office hours 9 AM - 5 PM EST", "America/Los_Angeles", SUMMER,
+   "Office hours 9 AM«(7:00 AM PDT)» - 5 PM EST«(3:00 PM PDT)»"],
+  ["Hours: 9AM-5PM CST", "America/Los_Angeles", SUMMER,
+   "Hours: 9AM«(8:00 AM PDT)»-5PM CST«(4:00 PM PDT)»"],
+  ["Hours: 9 AM \u2013 5 PM CST", "America/Los_Angeles", SUMMER,
+   "Hours: 9 AM«(8:00 AM PDT)» \u2013 5 PM CST«(4:00 PM PDT)»"],
+  ["shift 7 to 8 to 9 PM CST", "America/Los_Angeles", SUMMER,
+   "shift 7«(6:00 PM PDT)» to 8«(7:00 PM PDT)» to 9 PM CST«(8:00 PM PDT)»"],
+
+  // A closing am/pm marker carries back over the range...
+  ["Call between 7:00 and 9:00 PM EST", "America/Los_Angeles", SUMMER,
+   "Call between 7:00«(5:00 PM PDT)» and 9:00 PM EST«(7:00 PM PDT)»"],
+  // ...unless that would open the range after it closes, when the range
+  // crosses noon instead.
+  ["Open 11:00 to 1:00 PM EST", "America/Los_Angeles", SUMMER,
+   "Open 11:00«(9:00 AM PDT)» to 1:00 PM EST«(11:00 AM PDT)»"],
+  // 12:30 pm is 12:30, not 00:30, so this range does not cross.
+  ["Open 12:30 to 2:00 PM EST", "America/Los_Angeles", SUMMER,
+   "Open 12:30«(10:30 AM PDT)» to 2:00 PM EST«(12:00 PM PDT)»"],
+  // 24-hour ends have no marker to share; the label still carries.
+  ["Deploy 14:00 to 16:00 CST", "America/Los_Angeles", SUMMER,
+   "Deploy 14:00«(13:00 PDT)» to 16:00 CST«(15:00 PDT)»"],
+
+  // A marker is what revives a bare end: "7 to 9 PM ET" is a time, "9 to 5"
+  // on its own is not, and a bare closing end lends nothing.
+  ["Webinar 7 to 9 PM ET", "America/Los_Angeles", SUMMER,
+   "Webinar 7«(4:00 PM PDT)» to 9 PM ET«(6:00 PM PDT)»"],
+  ["We are open 9 to 5 CST", "America/Los_Angeles", SUMMER,
+   "We are open 9 to 5 CST"],
+
+  // Forwards, the zone label alone: "from 9 AM CST to 5 PM".
+  ["from 9 AM CST to 5 PM", "America/Los_Angeles", SUMMER,
+   "from 9 AM CST«(8:00 AM PDT)» to 5 PM«(4:00 PM PDT)»"],
+
+  // A label naming the reader's own zone still earns no annotation, at either
+  // end of the range.
+  ["Webinar 7 to 9 PM PT", "America/Los_Angeles", SUMMER,
+   "Webinar 7 to 9 PM PT"],
+
+  // Two times joined by more than a connector are two times: the label on the
+  // closing one says nothing about the opening one, which stays untagged.
+  ["we open at 8 am and close at 5 pm CST", "America/Los_Angeles", SUMMER,
+   "we open at 8 am«(1:00 AM PDT)» and close at 5 pm CST«(4:00 PM PDT)»"],
+
+  // Still not times. The hyphen rule now admits "5PM" in "9AM-5PM", so the
+  // numeric shapes it used to reject wholesale are worth re-asserting.
+  ["date 2026-12-30 not a time", "America/Los_Angeles", SUMMER,
+   "date 2026-12-30 not a time"],
+  ["ratio 1:1 and price 3.30", "America/Los_Angeles", SUMMER,
+   "ratio 1:1 and price 3.30"],
+  ["scores 5-4 and 3-2 last night", "America/Los_Angeles", SUMMER,
+   "scores 5-4 and 3-2 last night"],
+  ["server zone is GMT-08:00 today", "America/Los_Angeles", SUMMER,
+   "server zone is GMT-08:00 today"],
+  ["call 1-800-555-1212 at 3 PM CST", "America/Los_Angeles", SUMMER,
+   "call 1-800-555-1212 at 3 PM CST«(2:00 PM PDT)»"]
+];
+
+rangeCases.forEach(function (c) {
+  var settings = base({ targetTimeZone: c[1], untaggedSource: "UTC" });
+  var got = annotateAt(c[0], settings, c[2]);
+  var ok = got === c[3];
+  if (!ok) failures++;
+  console.log((ok ? "ok   " : "FAIL ") + JSON.stringify(c[0]) +
+    "  [reader " + c[1] + ", " + c[2].toISOString().slice(0, 10) + "]");
+  if (!ok) {
+    console.log("       expected: " + JSON.stringify(c[3]));
+    console.log("       got:      " + JSON.stringify(got));
+  }
+});
+
+console.log(failures ? "\n" + failures + " failure(s)" : "\nall asserted checks passed");
 process.exit(failures ? 1 : 0);
