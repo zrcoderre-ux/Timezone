@@ -20,12 +20,16 @@
    *   4 "UTC"/"GMT"/"Z"   5 signed offset after it (e.g. +5, -08:00)
    *   6 bare abbreviation (validated against the table)
    *
-   * The leading lookbehind rejects times that are part of a longer number
-   * (dates, decimals, ratios). We require either minutes or an am/pm marker so
-   * a bare integer never matches.
+   * The leading lookbehinds reject times that are part of a longer number:
+   * a preceding digit, dot, colon or slash (decimals, ratios, ISO dates), a
+   * hyphen that itself follows a digit ("2026-12-30"), and a signed UTC/GMT
+   * offset ("GMT-08:00", whose "08:00" is not a second time). A hyphen after a
+   * *letter* is left alone so the closing half of "9AM-5PM CST" can match —
+   * the range pass below is what gives it its zone. We require either minutes
+   * or an am/pm marker so a bare integer never matches on its own.
    */
   var TIME_RE = new RegExp(
-    "(?<![\\d.:/-])" +
+    "(?<![\\d.:/])(?<!\\d-)(?<!\\b(?:UTC|GMT|Z)\\s*[+-])" +
     "(\\d{1,2})(?::([0-5]\\d))?" +
     "(?:\\s*([ap])\\.?m\\.?)?" +
     "(?:" +
@@ -34,6 +38,17 @@
     ")?",
     "gi"
   );
+
+  /*
+   * Text that can sit between the two ends of one range and nothing more: a
+   * dash, "to", "until", "and". Extra words mean two separate times ("we open
+   * at 8 am and close at 5 pm CST"), so only a bare connector counts.
+   *
+   * \u2010-\u2015 are the hyphen, non-breaking hyphen, figure dash, en dash,
+   * em dash and horizontal bar.
+   */
+  var RANGE_GAP_RE =
+    /^\s*(?:[-\u2010-\u2015]|to|until|till|thru|through|and|or|&)\s*$/i;
 
   // Parse a "+5", "-08:00", "+0530" style offset into minutes east of UTC.
   function parseSignedOffset(str) {
@@ -128,20 +143,13 @@
 
     var hasMinutes = minStr !== undefined;
     var hasAmPm = ap !== undefined;
-    // Reject bare integers with no ":mm" and no am/pm (avoids "3 EST" etc.).
-    if (!hasMinutes && !hasAmPm) return null;
-
-    var hour = parseInt(hourStr, 10);
+    var rawHour = parseInt(hourStr, 10);
     var minute = hasMinutes ? parseInt(minStr, 10) : 0;
-    var origHour12 = hasAmPm;
 
     if (hasAmPm) {
-      if (hour < 1 || hour > 12) return null;
-      var pm = ap.toLowerCase() === "p";
-      if (pm && hour !== 12) hour += 12;
-      if (!pm && hour === 12) hour = 0;
-    } else {
-      if (hour > 23) return null;
+      if (rawHour < 1 || rawHour > 12) return null;
+    } else if (rawHour > 23) {
+      return null;
     }
     if (minute > 59) return null;
 
@@ -176,14 +184,116 @@
     return {
       matchText: match[0],
       index: match.index,
-      hour: hour,
+      rawHour: rawHour,          // as written, before am/pm is applied
       minute: minute,
-      origHour12: origHour12,
+      meridiem: hasAmPm ? ap.toLowerCase() : null, // "a", "p", or null
+      /*
+       * A bare integer with neither minutes nor an am/pm marker is not a time
+       * on its own — prices, scores and version numbers all look like one. It
+       * is kept as a *candidate* rather than dropped here only so the range
+       * pass can revive it when a trailing marker qualifies it ("7 to 9 PM");
+       * scanText discards whatever is still bare afterwards.
+       */
+      bare: !hasMinutes && !hasAmPm,
       srcOffset: srcOffset,      // null => not a fixed-offset label
       srcZone: srcZone,          // set for a generic label ("PT")
       srcAbbrev: srcAbbrev,      // set for any regional label, not UTC/GMT/Z
       displayedName: displayedName
     };
+  }
+
+  // --- Ranges --------------------------------------------------------------
+
+  // Hour of the day, once an am/pm marker (if any) is applied.
+  function hour24(rawHour, meridiem) {
+    if (!meridiem) return rawHour;
+    var h = rawHour % 12; // 12 am -> 0, 12 pm -> 12
+    return meridiem === "p" ? h + 12 : h;
+  }
+
+  function hasZoneLabel(desc) {
+    return desc.srcOffset !== null || desc.srcZone !== null;
+  }
+
+  function copyZoneLabel(from, to) {
+    to.srcOffset = from.srcOffset;
+    to.srcZone = from.srcZone;
+    to.srcAbbrev = from.srcAbbrev;
+    to.displayedName = from.displayedName;
+  }
+
+  // Nothing but a range connector between the two matches?
+  function isRangeGap(text, left, right) {
+    var gap = text.slice(left.index + left.matchText.length, right.index);
+    return RANGE_GAP_RE.test(gap);
+  }
+
+  /*
+   * Which half of the day the opening end of a range belongs to, given the
+   * marker written on the closing end. A range runs forwards, so the marker
+   * ordinarily carries straight over ("7:00 to 9:00 PM" opens at 7 PM); when
+   * that would put the opening time *after* the closing one the range crosses
+   * over instead, and the opening time takes the other half ("11:00 to 1:00 PM"
+   * opens at 11 AM). Returns null if the hour cannot be read on a 12-hour
+   * clock at all, in which case no marker is inherited.
+   */
+  function inheritedMeridiem(left, right) {
+    if (left.rawHour < 1 || left.rawHour > 12) return null;
+    var endMinutes = hour24(right.rawHour, right.meridiem) * 60 + right.minute;
+    var sameHalf = hour24(left.rawHour, right.meridiem) * 60 + left.minute;
+    if (sameHalf <= endMinutes) return right.meridiem;
+    return right.meridiem === "p" ? "a" : "p";
+  }
+
+  /*
+   * "We are open Monday-Friday 7 AM to 9 PM CST": the label closing a range
+   * qualifies both of its ends, but the regex only ever sees it attached to the
+   * time it follows. Read alone, "7 AM" is an *untagged* time — the Statuspage
+   * bug in another costume. For a reader whose own zone is the target that
+   * yields nothing (the reported symptom: email opening hours picked up a
+   * conversion on one end of the range and not the other); for anyone else it
+   * yields a confidently wrong conversion of a Central time.
+   *
+   * So where two matched times are joined by nothing but a range connector,
+   * each lends the other the qualifiers it lacks:
+   *
+   *   - backwards, the am/pm marker and the zone label, which is how an
+   *     English range is written ("7 to 9 PM CST" labels only its close);
+   *   - forwards, the zone label alone ("from 9 AM CST to 5 PM"). A marker is
+   *     not carried forwards: "9 AM to 5" is not how a range is written, and
+   *     guessing one would invent the half of the day it names.
+   *
+   * A marker inherited backwards is also what revives a bare integer end: "7"
+   * alone is a price or a score, but "7 to 9 PM" is a time. With no minutes and
+   * no marker to inherit it stays ignored, so "9 to 5 CST" still annotates
+   * neither end.
+   */
+  function shareRangeQualifiers(descs, text) {
+    var i, left, right;
+    // Backwards first, so a closing marker carries down a chain of ranges.
+    for (i = descs.length - 2; i >= 0; i--) {
+      left = descs[i];
+      right = descs[i + 1];
+      // A bare end has nothing to lend and cannot be read as a time itself.
+      if (right.bare || !isRangeGap(text, left, right)) continue;
+      if (left.meridiem === null && right.meridiem !== null) {
+        var meridiem = inheritedMeridiem(left, right);
+        if (meridiem) {
+          left.meridiem = meridiem;
+          left.bare = false;
+        }
+      }
+      if (!left.bare && !hasZoneLabel(left) && hasZoneLabel(right)) {
+        copyZoneLabel(right, left);
+      }
+    }
+    // Then forwards, for the zone label only.
+    for (i = 1; i < descs.length; i++) {
+      left = descs[i - 1];
+      right = descs[i];
+      if (left.bare || right.bare || !isRangeGap(text, left, right)) continue;
+      if (!hasZoneLabel(right) && hasZoneLabel(left)) copyZoneLabel(left, right);
+    }
   }
 
   /*
@@ -193,6 +303,11 @@
   function buildAnnotation(desc, settings, now) {
     var target = settings.targetTimeZone;
     if (!target) return null;
+
+    // Resolved here rather than at match time: a range can lend its opening
+    // end the am/pm marker written on its close, which moves the hour.
+    var hour = hour24(desc.rawHour, desc.meridiem);
+    var origHour12 = desc.meridiem !== null;
 
     var y = now.getUTCFullYear(), mo = now.getUTCMonth(), d = now.getUTCDate();
     // Anchor bare times to "today" in the target zone so the date used for
@@ -207,19 +322,19 @@
     var instant, srcOffset;
     if (desc.srcOffset !== null) {
       srcOffset = desc.srcOffset;
-      instant = Date.UTC(y, mo, d, desc.hour, desc.minute) - srcOffset * 60000;
+      instant = Date.UTC(y, mo, d, hour, desc.minute) - srcOffset * 60000;
     } else if (desc.srcZone) {
       // A generic label ("PT") — taken as accurate, so its offset comes from
       // the zone's rules on the day, not from an assumed standard time. This is
       // a labelled time, so `convertUntagged` doesn't gate it.
-      instant = wallToInstantIana(y, mo, d, desc.hour, desc.minute, desc.srcZone);
+      instant = wallToInstantIana(y, mo, d, hour, desc.minute, desc.srcZone);
       srcOffset = ianaOffsetMinutes(desc.srcZone, new Date(instant));
     } else {
       if (!settings.convertUntagged) return null;
       var untagged = settings.untaggedSource === "local"
         ? Intl.DateTimeFormat().resolvedOptions().timeZone
         : settings.untaggedSource;
-      instant = wallToInstantIana(y, mo, d, desc.hour, desc.minute, untagged);
+      instant = wallToInstantIana(y, mo, d, hour, desc.minute, untagged);
       srcOffset = ianaOffsetMinutes(untagged, new Date(instant));
     }
 
@@ -252,7 +367,7 @@
     var use12;
     if (settings.hourFormat === "12") use12 = true;
     else if (settings.hourFormat === "24") use12 = false;
-    else use12 = desc.origHour12; // auto: mirror the original
+    else use12 = origHour12; // auto: mirror the original
 
     var fmtOpts = { timeZone: target, hour: "numeric", minute: "2-digit", hour12: use12 };
     if (settings.showZoneName) fmtOpts.timeZoneName = "short";
@@ -268,22 +383,35 @@
    * time that should be annotated. Non-overlapping, left to right.
    */
   function scanText(text, settings, now) {
-    var results = [];
+    // Collect every candidate first: whether one end of a range is a time at
+    // all, and which time, can depend on the end that follows it.
+    var descs = [];
     TIME_RE.lastIndex = 0;
     var m;
     while ((m = TIME_RE.exec(text)) !== null) {
       if (m[0].length === 0) { TIME_RE.lastIndex++; continue; }
       var desc = interpretMatch(m, settings);
       if (!desc) continue;
-      // interpretMatch may have trimmed a trailing non-zone token; recompute
-      // the real end from the (possibly shortened) match text.
-      var start = desc.index;
-      var end = start + desc.matchText.length;
-      var annotation = buildAnnotation(desc, settings, now);
+      // interpretMatch may have trimmed a trailing non-zone token off the
+      // match; resume from the real end of the time so the trimmed text — a
+      // range connector, as often as not — is still there to be read.
+      TIME_RE.lastIndex = desc.index + desc.matchText.length;
+      descs.push(desc);
+    }
+
+    shareRangeQualifiers(descs, text);
+
+    var results = [];
+    for (var i = 0; i < descs.length; i++) {
+      var d = descs[i];
+      if (d.bare) continue; // a lone integer: price, score, version number
+      var annotation = buildAnnotation(d, settings, now);
       if (annotation) {
-        results.push({ start: start, end: end, annotation: annotation });
-        // Continue scanning from the true end of the consumed time.
-        TIME_RE.lastIndex = end;
+        results.push({
+          start: d.index,
+          end: d.index + d.matchText.length,
+          annotation: annotation
+        });
       }
     }
     return results;
